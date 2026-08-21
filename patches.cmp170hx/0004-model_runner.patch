@@ -1,0 +1,51 @@
+--- a/vllm/v1/worker/gpu/model_runner.py
++++ b/vllm/v1/worker/gpu/model_runner.py
+@@ -209,7 +209,14 @@
+             if self.speculative_config.method in ("eagle3", "dflash", "dspark"):
+                 # Drafting may require auxiliary hidden states from target model outputs
+                 self.use_aux_hidden_state_outputs = True
+-                if self.use_pp:
++                # DSpark + PP is enabled here (see pp_utils.broadcast_draft and
++                # dspark/utils.load_dspark_model). It works because the drafter is
++                # already built on the last PP rank only (above), and for
++                # DeepSeek-V4 the aux-hidden-state taps (dspark_target_layer_ids
++                # = [40,41,42] of 43 layers) plus lm_head all land on that same
++                # last rank. eagle3/dflash keep the guard -- untested, and their
++                # aux layers are spread across ranks.
++                if self.use_pp and self.speculative_config.method != "dspark":
+                     raise ValueError(
+                         f"{self.speculative_config.method} with pipeline parallel "
+                         "is not supported."
+@@ -830,7 +837,19 @@
+         if self.pp_handler is not None:
+             outputs = self.pp_handler.get_prev_sampled_outputs()
+             if outputs is not None:
++                # Spec decode: scatter the relayed proposed draft tokens into this
++                # rank's state so the next step's combine_sampled_and_draft_tokens
++                # reads real values instead of zero-init (which gives ~0 acceptance
++                # and corrupt output). Pop before postprocess_sampled, which does
++                # not accept this kwarg. idx_mapping is -1 for excluded/freed reqs.
++                draft_tokens = outputs.pop("draft_tokens", None)
++                idx_mapping = outputs["idx_mapping"]
+                 self.postprocess_sampled(**outputs)
++                if draft_tokens is not None:
++                    valid = idx_mapping >= 0
++                    self.req_states.draft_tokens[idx_mapping[valid]] = draft_tokens[
++                        valid
++                    ]
+ 
+     def add_requests(self, scheduler_output: SchedulerOutput) -> None:
+         for new_req_data in scheduler_output.scheduled_new_reqs:
+@@ -1578,6 +1597,12 @@
+                 mm_inputs=mm_inputs,
+             )
+             self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
++            if self.pp_handler is not None:
++                # Relay the proposed draft tokens to the non-last PP ranks so
++                # their next-step combine_sampled_and_draft_tokens reads real
++                # values instead of zero-init (otherwise acceptance ~= 0 and the
++                # output is garbage). Must be issued after propose().
++                self.pp_handler.broadcast_draft(draft_tokens, input_batch)
+ 
+         if self.num_speculative_steps > 0:
+             # Spec-decode and diffusion LLMs both use draft tokens but the latter does

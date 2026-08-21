@@ -1,0 +1,166 @@
+From: deepseek-v4-cmp170hx
+Subject: [PATCH 0005a] sparse_attn_indexer: the prefill top-k torch fallback that
+ patch 0006 rewrites but nothing ever added
+
+MUST BE APPLIED BEFORE 0006. The name sorts between 0005 and 0006 so that a
+plain `for p in patches/*.patch` loop gets the order right.
+
+Patches 0001-0006 as originally published were INCOMPLETE, and in two ways:
+
+  1. `_top_k_per_row_prefill_torch()` and `_prefill_topk_needs_torch_fallback()`
+     were called at four sites and defined nowhere.
+  2. 0006 does not ADD the fallback branch - it REWRITES one, turning
+     `if _prefill_topk_needs_torch_fallback():` into an `elif` and carrying
+     `_top_k_per_row_prefill_torch(` as unchanged context. The base
+     (haosdent/vllm@dsv4-flash-a100, f8ea5bb) has a bare, unconditional
+     `ops.top_k_per_row_prefill(...)` with no branch at all.
+
+So supplying only the two definitions is not enough - 0006 still fails on the
+`if` it expects to find. This patch adds both the definitions and the branch,
+which is the state 0006 was authored against. Reported in issue #1 by @fouvy,
+diagnosed by @snoby.
+
+WHY THE FALLBACK EXISTS - DO NOT STUB IT OUT ON SM8x.
+
+`ops.top_k_per_row_prefill`'s histogram path (taken by rows with more than
+`topk_tokens` candidates) can leave part of its dynamic-shared-memory output
+uninitialised and copy it out as indices. Downstream,
+`compute_global_topk_indices_and_lens` treats any index >= 0 as valid and
+dereferences it into the KV block table. Upstream added this fallback for SM12x
+in vllm-project/vllm PR #49897; we enable it for SM8x too because on 4x CMP
+170HX it reproduces as `Xid 31 MMU Fault ... ACCESS_TYPE_VIRT_WRITE` killing a
+worker on prefills above roughly 128k tokens (123k passes).
+
+`_prefill_topk_needs_torch_fallback()` returns True on sm_80 BY DESIGN. This is
+unrelated to patch 0001, whose `persistent_topk` gate is precautionary and whose
+originating report was retracted - that retraction does NOT apply here.
+Override with VLLM_DSV4_PREFILL_TOPK_TORCH=0 (force the CUDA kernel) or =1
+(force the fallback anywhere).
+
+Ordering contract: the downstream sparse-attention kernels iterate selected KV
+positions in ASCENDING POSITION order, whereas torch.topk returns score order.
+`_top_k_per_row_prefill_torch` sorts accordingly and pads short rows with -1 at
+the tail. A naive mask+torch.topk reimplementation runs but feeds wrongly
+ordered indices downstream.
+
+VERIFIED: from a pristine checkout of f8ea5bb, applying 0001 -> 0005a -> 0006
+produces zero rejects and reproduces our live in-production file byte-for-byte
+(md5 96380027dd74c5913b6c4aeca6b25b02).
+---
+--- a/vllm/model_executor/layers/sparse_attn_indexer.py
++++ b/vllm/model_executor/layers/sparse_attn_indexer.py
+@@ -128,6 +128,78 @@
+     )
+ 
+ 
++def _top_k_per_row_prefill_torch(
++    logits: torch.Tensor,
++    cu_seqlen_ks: torch.Tensor,
++    cu_seqlen_ke: torch.Tensor,
++    topk_indices: torch.Tensor,
++    topk_tokens: int,
++) -> None:
++    """torch.topk fallback with ``top_k_per_row_prefill``'s output contract.
++
++    Ported from vllm-project/vllm PR #49897, which added this for SM12x. The
++    CUDA kernel's histogram path (taken by rows with more than ``topk_tokens``
++    candidates) can leave part of its dynamic-shared-memory output
++    uninitialized and copy it out as indices; downstream,
++    ``compute_global_topk_indices_and_lens`` treats any index ``>= 0`` as valid
++    and dereferences it into the KV block table, crashing with a CUDA illegal
++    memory access.
++
++    Enabled here for SM8x as well: on 4x CMP 170HX this reproduces as an
++    ``Xid 31 MMU Fault ... ACCESS_TYPE_VIRT_WRITE`` that kills a worker on
++    prefills above roughly 128k tokens, while 123k passes.
++
++    Select the top ``topk_tokens`` positions of ``logits[i, ks_i:ke_i)`` per
++    row, emit them relative to ``ks_i`` in ascending position order, and pad
++    rows with fewer candidates with ``-1`` (the kernel's short-row contract).
++    """
++    num_cols = logits.shape[1]
++    ks = cu_seqlen_ks.to(torch.long)[:, None]
++    cols = torch.arange(num_cols, device=logits.device)[None, :]
++    valid = (cols >= ks) & (cols < cu_seqlen_ke.to(torch.long)[:, None])
++    # logits is a per-chunk scratch buffer that is dead after top-k; mask it
++    # in place rather than materializing a masked copy.
++    logits.masked_fill_(~valid, float("-inf"))
++    k = min(topk_tokens, num_cols)
++    top_values, top_cols = logits.topk(k, dim=-1)
++    relative = (top_cols - ks).to(torch.int32)
++    # Downstream sparse-attention kernels iterate the selected KV positions in
++    # ascending order; emit position-sorted indices with the ``-1`` pads at the
++    # tail (torch.topk returns score order instead). Non-finite scores (rows
++    # shorter than ``topk_tokens``, or NaN logits) pad.
++    pad_sentinel = torch.iinfo(torch.int32).max
++    relative = torch.where(
++        top_values.isfinite(), relative, relative.new_full((), pad_sentinel)
++    )
++    relative, _ = relative.sort(dim=-1)
++    relative = torch.where(
++        relative == pad_sentinel, relative.new_full((), -1), relative
++    )
++    topk_indices[:, :k] = relative
++    if k < topk_tokens:
++        topk_indices[:, k:] = -1
++
++
++def _prefill_topk_needs_torch_fallback() -> bool:
++    """SM12x per PR #49897; SM8x added here (see _top_k_per_row_prefill_torch).
++
++    Set VLLM_DSV4_PREFILL_TOPK_TORCH=0 to force the CUDA kernel back on, or =1
++    to force the fallback on any architecture.
++    """
++    import os
++
++    forced = os.environ.get("VLLM_DSV4_PREFILL_TOPK_TORCH")
++    if forced is not None:
++        return forced == "1"
++    if not current_platform.is_cuda():
++        return False
++    return current_platform.is_device_capability_family(
++        120
++    ) or current_platform.has_device_capability(80) and not (
++        current_platform.has_device_capability(90)
++    )
++
++
+ @triton.jit
+ def _fused_indexer_q_rope_quant_kernel(
+     positions,
+@@ -526,16 +598,25 @@
+                         clean_logits=False,
+                     )
+                 num_rows = logits.shape[0]
+-                ops.top_k_per_row_prefill(
+-                    logits,
+-                    cu_seqlen_ks,
+-                    cu_seqlen_ke,
+-                    topk_indices,
+-                    num_rows,
+-                    logits.stride(0),
+-                    logits.stride(1),
+-                    topk_tokens,
+-                )
++                if _prefill_topk_needs_torch_fallback():
++                    _top_k_per_row_prefill_torch(
++                        logits,
++                        cu_seqlen_ks,
++                        cu_seqlen_ke,
++                        topk_indices,
++                        topk_tokens,
++                    )
++                else:
++                    ops.top_k_per_row_prefill(
++                        logits,
++                        cu_seqlen_ks,
++                        cu_seqlen_ke,
++                        topk_indices,
++                        num_rows,
++                        logits.stride(0),
++                        logits.stride(1),
++                        topk_tokens,
++                    )
+ 
+             _merge_dcp_topk_global(
+                 logits,

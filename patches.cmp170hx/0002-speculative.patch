@@ -1,0 +1,17 @@
+--- a/vllm/config/speculative.py
++++ b/vllm/config/speculative.py
+@@ -1078,6 +1078,14 @@
+                         self.target_parallel_config, self.draft_tensor_parallel_size
+                     )
+                 )
++                if self.method == "dspark":
++                    # The DSpark draft is NOT pipelined: the model runner builds
++                    # it on the last PP rank only and it runs there whole, so it
++                    # is a pp_size=1 model regardless of the target's split.
++                    # Inheriting the target's pipeline_parallel_size would make
++                    # verify_with_parallel_config demand SupportsPP from the
++                    # draft architecture, which it neither implements nor needs.
++                    self.draft_parallel_config.pipeline_parallel_size = 1
+         return self
+ 
+     def _validate_suffix_decoding(self):

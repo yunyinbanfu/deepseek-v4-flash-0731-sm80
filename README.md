@@ -1,207 +1,158 @@
-# DeepSeek-V4-Flash-0731 on SM80 GPUs
+<!-- markdownlint-disable MD001 MD041 -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
+    <img alt="vLLM" src="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-light.png" width="50%">
+  </picture>
+</p>
 
-This repository packages the modified framework source files, patches, launch scripts and benchmark harnesses used to run `deepseek-ai/DeepSeek-V4-Flash-0731` on SM80-class NVIDIA GPUs such as A100 / A800 / CMP 170HX.
+<h2 align="center">DeepSeek-V4-Flash-0731 SM80 vLLM Fork</h2>
 
-The target model is DeepSeek-V4-Flash-0731, roughly 284B total parameters with about 13B active MoE parameters. The tested hardware was 4 x NVIDIA CMP 170HX, GA100 silicon, 64 GB HBM each, PCIe Gen2 x4, no P2P/NVLink. The same direction is intended for SM80 A100-like cards where native FP8 math is unavailable but BF16 tensor cores and Marlin paths are available.
+<p align="center">
+  A source-level vLLM fork for running DeepSeek-V4-Flash-0731 on SM80/A100-class GPUs with PP4 + DSpark, sparse MLA/indexer fallback, and SM80-oriented kernel fixes.
+</p>
 
-## What This Adds
+---
 
-- Provides the actual modified vLLM framework source files under `framework/`, copied from the working server trees.
-- Enables DeepSeek-V4-Flash serving on SM80 using the `haosdent/vllm:dsv4-flash-a100` branch as the base.
-- Enables DSpark speculative decoding under pipeline parallelism, which vLLM originally rejected for this path.
-- Fixes long-context sparse MLA indexer memory pressure by row-chunking the `[M, N]` FP32 logits temporary.
-- Adds an SM80 prefill top-k torch fallback to avoid invalid top-k indices in long-context sparse indexer paths.
-- Fixes Marlin MoE routed-layout determinism at the wrapper level by canonicalizing `sorted_token_ids` before entering the Marlin MoE kernel.
-- Provides an optional FP8 block-weight to BF16 pre-dequant route for selected shared-expert dense linear layers on SM80.
-- Ships launch scripts and benchmark harnesses used for decode, prefill, concurrency, long-context and correctness tests.
+## What this repository is
 
-## Measured Highlights
+This repository is a full vLLM source tree, not a Docker wrapper or a patch-only package. It is intended to be cloned, built, and launched like a normal vLLM checkout.
 
-These are end-to-end measurements from the local test environment. See `results/RESULTS.cmp170hx.md` for full caveats and tables.
+Model weights are not included. Put the model under a local path such as:
 
-| Item | Result |
-|---|---:|
-| PP4 + DSpark single-stream decode aggregate | 98.1 tok/s |
-| PP4 plain single-stream decode aggregate | 50.8 tok/s |
-| DSpark speedup under PP | 1.93x |
-| PP4 prefill at ~77k context | ~5,300 tok/s |
-| PP vs TP prefill at ~77k on PCIe Gen2 x4/no-P2P cards | ~6.6x |
-| PP4 + DSpark aggregate decode at 64 concurrent requests | 712.8 tok/s |
-| Verified one-shot context | 1,047,736 tokens |
-| 1024 input / 128 output / 16 requests in one batch | median 136.65 tok/s |
-| Optional shared-expert FP8->BF16 dequant, 1024x64 c=8 | ~45 tok/s -> 63-80 tok/s |
+```bash
+/srv/models/deepseek-ai/DeepSeek-V4-Flash-0731
+```
 
-## Repository Layout
+Upstream/reference context:
+
+- Base project: [vllm-project/vllm](https://github.com/vllm-project/vllm)
+- Development base used for this fork: `haosdent/vllm` branch `dsv4-flash-a100`, around commit `12810046c`
+- Target model: `deepseek-ai/DeepSeek-V4-Flash-0731`
+- Target tested hardware class: NVIDIA SM80 / A100-class GPUs, including CMP 170HX-style environments
+
+The original upstream README is kept as [README.vllm.md](README.vllm.md).
+
+## Main changes in this fork
+
+- DeepSeek-V4-Flash PP4 serving path: keeps the framework source directly in-tree and enables the PP + DSpark path used by the tested setup.
+- DSpark + pipeline parallelism support: adapts draft model helpers and pipeline communication so speculative serving can work across PP ranks.
+- Sparse MLA / sparse indexer SM80 fallback: adds row-chunked top-k/indexer fallback paths for long-context DeepSeek-V4-Flash workloads on SM80 where the newer kernel path is not available.
+- Marlin MoE deterministic token ordering: applies the PR #52532 style fix by canonicalizing `sorted_token_ids` before the Marlin MoE kernel, avoiding output drift caused by semantically equivalent but physically different routed layouts.
+- FP8 shared-expert dequant control: adds environment switches for selectively routing FP8 Marlin linear layers through BF16 dequant/cuBLAS paths when this is faster or easier to profile on the tested SM80 setup.
+- Local launch and benchmark scripts: includes the scripts used for PP4 launch and offline throughput checks.
+
+Key files to inspect:
 
 ```text
-framework/
-  README.md
-  new-tmp-vllm/        actual modified source files from /home/lxk/new-tmp/tmp/vllm
-  tmp-vllm-pr52532/    later Marlin MoE PR #52532 source files from /home/lxk/tmp/vllm
-patches/
-  0001-pp-dspark-long-context-sm80.patch
-  0002-marlin-moe-token-order-canonicalization.patch
-  optional/0003-fp8-marlin-bf16-dequant-include-nvtx.patch
+vllm/v1/worker/gpu/model_runner.py
+vllm/v1/worker/gpu/pp_utils.py
+vllm/v1/worker/gpu/spec_decode/dspark/utils.py
+vllm/model_executor/layers/sparse_attn_indexer.py
+vllm/model_executor/layers/fused_moe/experts/marlin_moe.py
+vllm/model_executor/kernels/linear/scaled_mm/marlin.py
+vllm/model_executor/layers/quantization/fp8.py
+vllm/envs.py
 launch/
-  run-pp-dspark.sh
-  run-a100.sh
 bench/
-  benchmark harnesses and offline scripts
-results/
-  measured result notes and setting rationale
+patches.cmp170hx/
 ```
 
-## Framework Source Files
+## Build from source
 
-The source files are copied with their original vLLM-relative paths so they can be inspected directly on GitHub or overlaid onto a vLLM checkout.
-
-Main working tree:
-
-```text
-framework/new-tmp-vllm/
-```
-
-This was copied from:
-
-```text
-/home/lxk/new-tmp/tmp/vllm
-```
-
-It contains the PP + DSpark enablement, sparse indexer long-context fixes, SM80 prefill top-k fallback, and optional FP8 Marlin -> BF16/cuBLAS shared-expert dense-linear route.
-
-Later Marlin MoE consistency fix:
-
-```text
-framework/tmp-vllm-pr52532/
-```
-
-This was copied from:
-
-```text
-/home/lxk/tmp/vllm
-```
-
-It contains the later PR #52532 token-order canonicalization source and regression test.
-
-The whole `/home/lxk/new-tmp` directory is not uploaded raw because it also contains git metadata, local build outputs, virtual environments, logs, nsys/ncu profiles and other generated artifacts.
-
-## Base vLLM
-
-The source files and patches were prepared against:
+A typical editable install is:
 
 ```bash
-git clone --branch dsv4-flash-a100 https://github.com/haosdent/vllm.git
-cd vllm
-git checkout 12810046c
+git clone https://github.com/yunyinbanfu/deepseek-v4-flash-0731-sm80.git
+cd deepseek-v4-flash-0731-sm80
+
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -e .
 ```
 
-Commit `12810046c` is titled:
+Use the CUDA/PyTorch stack that matches your machine. This fork was prepared for local source builds in a vLLM development environment; prebuilt binary artifacts are intentionally not committed.
 
-```text
-DSv4 SM80: DeepSeek-V4-Flash on A100 -- sparse MLA enablement, kernel tuning, and serving optimization
-```
+## PP4 launch example
 
-## Use The Source Files
-
-To overlay the framework files directly onto a vLLM checkout:
+Example GPU selection used in local testing:
 
 ```bash
-cd /path/to/vllm
-rsync -a /path/to/deepseek-v4-flash-0731-sm80/framework/new-tmp-vllm/ ./
-```
+cd /path/to/deepseek-v4-flash-0731-sm80
 
-To also overlay the later Marlin MoE PR #52532 consistency fix:
-
-```bash
-rsync -a /path/to/deepseek-v4-flash-0731-sm80/framework/tmp-vllm-pr52532/ ./
-```
-
-Alternatively, apply the patch files:
-
-```bash
-cd /path/to/vllm
-git apply /path/to/deepseek-v4-flash-0731-sm80/patches/0001-pp-dspark-long-context-sm80.patch
-git apply /path/to/deepseek-v4-flash-0731-sm80/patches/0002-marlin-moe-token-order-canonicalization.patch
-```
-
-Optional shared-expert FP8->BF16 dense-linear routing patch:
-
-```bash
-git apply /path/to/deepseek-v4-flash-0731-sm80/patches/optional/0003-fp8-marlin-bf16-dequant-include-nvtx.patch
-```
-
-Use the optional patch only after profiling. It is beneficial for selected shared expert dense layers, but should not be enabled globally for all FP8 linears.
-
-## Launch
-
-The main serving profile is pipeline-parallel DSpark:
-
-```bash
-/path/to/deepseek-v4-flash-0731-sm80/launch/run-pp-dspark.sh
-```
-
-Important defaults:
-
-- `--pipeline-parallel-size 4`
-- `--kv-cache-dtype fp8`
-- `--tokenizer-mode deepseek_v4`
-- `--speculative-config '{"method":"dspark","num_speculative_tokens":5}'`
-- `DSV4_LOGITS_ROW_CHUNK=64` for long conversations, `128` or `256` for one-shot document prefill profiles
-
-Model weights are not included in this repository. Point the launch script at a local copy of:
-
-```text
-deepseek-ai/DeepSeek-V4-Flash-0731
-```
-
-## Offline Benchmark Example
-
-The offline script used for the 1024 input / 128 output / 16 requests batch test is included at:
-
-```text
-bench/offline_1024x128_c1_r16_5rounds_table.py
-```
-
-Run pattern:
-
-```bash
-cd /path/to/vllm
 CUDA_VISIBLE_DEVICES=0,2,3,4 \
-PYTHONPATH=/path/to/vllm \
+PYTHONPATH=$PWD \
 VLLM_USE_V2_MODEL_RUNNER=1 \
 VLLM_SPARSE_DENSE_QUERY_BLOCK=4 \
 VLLM_SPARSE_DENSE_QUERY_BLOCK_DECODE=4 \
-/path/to/python bench/offline_1024x128_c1_r16_5rounds_table.py
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+python -m vllm.entrypoints.openai.api_server \
+  --model /srv/models/deepseek-ai/DeepSeek-V4-Flash-0731 \
+  --trust-remote-code \
+  --tokenizer-mode deepseek_v4 \
+  --tensor-parallel-size 1 \
+  --pipeline-parallel-size 4 \
+  --kv-cache-dtype fp8 \
+  --max-model-len 2048 \
+  --gpu-memory-utilization 0.98
 ```
 
-This benchmark intentionally uses `max_num_seqs=req_per_round` for the row labeled `conc=1, req_per_round=16`, meaning one submitted batch containing 16 schedulable requests.
+See [launch/run-pp-dspark.sh](launch/run-pp-dspark.sh) and [launch/run-a100.sh](launch/run-a100.sh) for local launch templates.
 
-## Correctness Notes
+## Offline benchmark examples
 
-### Marlin MoE Token Order Canonicalization
+Single-concurrency table-style test, fixed 1,024 input tokens and 128 output tokens:
 
-The Marlin MoE fix does not change the low-level `moe_wna16_marlin_gemm` reduction behavior. Instead, it canonicalizes `sorted_token_ids` in the `fused_marlin_moe()` wrapper after `moe_align_block_size()` and before entering the Marlin kernel. This makes semantically equivalent routed layouts enter the kernel with the same physical token order.
+```bash
+cd /path/to/deepseek-v4-flash-0731-sm80
 
-Regression summary from the local verification:
+CUDA_VISIBLE_DEVICES=0,2,3,4 \
+PYTHONPATH=$PWD \
+VLLM_USE_V2_MODEL_RUNNER=1 \
+VLLM_SPARSE_DENSE_QUERY_BLOCK=4 \
+VLLM_SPARSE_DENSE_QUERY_BLOCK_DECODE=4 \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+python bench/offline_1024x128_c1_r16_5rounds_table.py
+```
+
+Other local benchmark/profiling entry points:
 
 ```text
-before wrapper canonicalization: differing_bf16=28, max_ulp=13
-after wrapper canonicalization:  differing_bf16=0,  max_ulp=0
+bench/offline_1024x128_5rounds.py
+bench/offline_pp4_c1_r16_1024x256.py
+bench/offline_pp4_1024x64_conc8_dequant_shared.py
 ```
 
-The single-token decode fast path is preserved.
+Historical local results and configuration notes are kept in:
 
-### Sparse Indexer Long Context
+```text
+RESULTS.cmp170hx.md
+SETTINGS.cmp170hx.md
+```
 
-The long-context fix row-chunks the sparse indexer's `[M, N]` FP32 logits temporary. Rows are independent for top-k, so this is exact, not an approximation. In the tested setup this removed the practical bug wall around ~134k tokens and reached the model's 1M context limit for one-shot prefill.
+## Useful environment switches
 
-## Known Limits
+```bash
+# Sparse dense/indexer row blocking used in the tested PP4 path
+export VLLM_SPARSE_DENSE_QUERY_BLOCK=4
+export VLLM_SPARSE_DENSE_QUERY_BLOCK_DECODE=4
 
-- At 1M context, time to first token is minutes, not interactive.
-- Retrieval accuracy degrades with depth even when the full window is reachable. Treat 1M as a large working set, not a reliable database.
-- DSpark output is not bit-reproducible at temperature 0. This was also observed on upstream TP DSpark and is not specific to the PP enablement patch.
-- The optional FP8->BF16 dequant path spends more VRAM and should be restricted with include patterns such as `shared_experts.gate_up_proj,shared_experts.down_proj`.
+# Optional FP8 Marlin dequant route controls
+export VLLM_MARLIN_FP8_DEQUANT_BF16=1
+export VLLM_MARLIN_FP8_DEQUANT_INCLUDE=shared_experts
+export VLLM_MARLIN_FP8_DEQUANT_EXCLUDE=
+```
+
+The FP8 dequant switches are intentionally opt-in. They are useful for testing whether a selected FP8 linear path should stay on Marlin or be dequantized to BF16 before GEMM on the local SM80 setup.
+
+## Notes and caveats
+
+- This repository does not include model weights, tokenizer files, generated build products, CUDA `.so` files, profiler databases, or Docker images.
+- Build artifacts such as `*.so`, `*.abi3.so`, `build/`, `dist/`, `.venv/`, logs, and profiler outputs are ignored.
+- The Marlin MoE canonicalization fix is applied at the `fused_marlin_moe()` wrapper level. It makes wrapper-level raw-vs-canonical routed layouts produce identical BF16 outputs; it does not change the low-level Marlin kernel reduction behavior itself.
+- For general vLLM usage, documentation, and citation, see [README.vllm.md](README.vllm.md) and the upstream [vLLM documentation](https://docs.vllm.ai/).
 
 ## License
 
-This repository contains modified source files, patches and scripts around vLLM. vLLM is Apache-2.0 licensed; retain upstream notices when applying or redistributing patched source.
+This fork keeps the upstream vLLM license. See [LICENSE](LICENSE).

@@ -1,0 +1,93 @@
+--- a/vllm/model_executor/layers/sparse_attn_indexer.py
++++ b/vllm/model_executor/layers/sparse_attn_indexer.py
+@@ -2,6 +2,8 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """Custom Sparse Attention Indexer layers."""
+ 
++import os
++
+ import torch
+ 
+ import vllm.envs as envs
+@@ -75,6 +77,9 @@
+         )
+ 
+ 
++_DSV4_LOGITS_ROW_CHUNK = int(os.environ.get("DSV4_LOGITS_ROW_CHUNK", "0"))
++
++
+ def _merge_dcp_topk_global(
+     logits: torch.Tensor,
+     topk_indices: torch.Tensor,
+@@ -587,6 +592,49 @@
+                         cu_seqlen_ke,
+                         clean_logits=False,
+                     )
++                elif _DSV4_LOGITS_ROW_CHUNK > 0 and dcp_world_size <= 1:
++                    # SM80 Triton fallback, row-chunked. The [M, N] float32
++                    # logits transient is the indexer's largest allocation and
++                    # scales with context; on the last PP rank it is what
++                    # exhausts the device at long context. Each row's top-k
++                    # reads only its own [ks, ke), so blocking over rows is
++                    # exact and caps the transient at rows x N x 4 bytes.
++                    _step = _DSV4_LOGITS_ROW_CHUNK
++                    _tot = q_slice_cast.shape[0]
++                    _torch_topk = _prefill_topk_needs_torch_fallback()
++                    for _r0 in range(0, _tot, _step):
++                        _r1 = min(_r0 + _step, _tot)
++                        logits = fp8_mqa_logits_triton(
++                            q_slice_cast[_r0:_r1],
++                            (k_quant_cast, k_scale_cast),
++                            weights[
++                                chunk.token_start + _r0 : chunk.token_start + _r1
++                            ],
++                            cu_seqlen_ks[_r0:_r1],
++                            cu_seqlen_ke[_r0:_r1],
++                            clean_logits=False,
++                        )
++                        if _torch_topk:
++                            _top_k_per_row_prefill_torch(
++                                logits,
++                                cu_seqlen_ks[_r0:_r1],
++                                cu_seqlen_ke[_r0:_r1],
++                                topk_indices[_r0:_r1],
++                                topk_tokens,
++                            )
++                        else:
++                            ops.top_k_per_row_prefill(
++                                logits,
++                                cu_seqlen_ks[_r0:_r1],
++                                cu_seqlen_ke[_r0:_r1],
++                                topk_indices[_r0:_r1],
++                                _r1 - _r0,
++                                logits.stride(0),
++                                logits.stride(1),
++                                topk_tokens,
++                            )
++                        del logits
++                    logits = q_slice_cast.new_empty((0, 0), dtype=torch.float32)
+                 else:
+                     # SM80/SM121 Triton fallback (DeepGEMM unavailable).
+                     logits = fp8_mqa_logits_triton(
+@@ -597,8 +645,10 @@
+                         cu_seqlen_ke,
+                         clean_logits=False,
+                     )
+-                num_rows = logits.shape[0]
+-                if _prefill_topk_needs_torch_fallback():
++                if logits.shape[0] == 0:
++                    pass
++                elif _prefill_topk_needs_torch_fallback():
++                    num_rows = logits.shape[0]
+                     _top_k_per_row_prefill_torch(
+                         logits,
+                         cu_seqlen_ks,
+@@ -612,7 +662,7 @@
+                         cu_seqlen_ks,
+                         cu_seqlen_ke,
+                         topk_indices,
+-                        num_rows,
++                        logits.shape[0],
+                         logits.stride(0),
+                         logits.stride(1),
+                         topk_tokens,

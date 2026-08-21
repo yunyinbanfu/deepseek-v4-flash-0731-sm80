@@ -1,0 +1,27 @@
+--- a/vllm/model_executor/layers/sparse_attn_indexer.py
++++ b/vllm/model_executor/layers/sparse_attn_indexer.py
+@@ -655,10 +655,20 @@
+             and current_platform.has_device_capability(90)
+             and not current_platform.is_device_capability_family(120)
+         )
+-        use_persistent_topk = current_platform.is_cuda() and topk_tokens in (
+-            512,
+-            1024,
+-            2048,
++        # NOTE(sm8x): the radix `persistent_topk` returns WRONG indices when the
++        # candidate count lands between k and 2k. With index_topk=512 and
++        # compress_ratio=4 that is prompt length 2049-4096 -- an ordinary range --
++        # and it does not crash, it emits fluent-looking degenerate text. The
++        # sibling `use_cooperative_topk` above carries a has_device_capability(90)
++        # gate; this one is missing it, so SM8x selects the broken kernel. Mirror
++        # the gate; SM8x then falls back to ops.top_k_per_row_decode.
++        # Reported on vllm-project/vllm#50576 by another CMP 170HX owner
++        # (boundary predicted 8/8; cudagraphs, chunked prefill and prompt
++        # repetition all ruled out); no throughput cost (19.5 -> 19.6 tok/s).
++        use_persistent_topk = (
++            current_platform.is_cuda()
++            and topk_tokens in (512, 1024, 2048)
++            and current_platform.has_device_capability(90)
+         )
+         if use_cooperative_topk:
+             workspace_manager = current_workspace_manager()
