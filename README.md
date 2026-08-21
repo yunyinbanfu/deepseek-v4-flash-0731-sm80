@@ -1,18 +1,19 @@
 # DeepSeek-V4-Flash-0731 on SM80 GPUs
 
-This repository packages the patches, launch scripts, Docker files and benchmark harnesses used to run `deepseek-ai/DeepSeek-V4-Flash-0731` on SM80-class NVIDIA GPUs such as A100 / A800 / CMP 170HX.
+This repository packages the modified framework source files, patches, launch scripts and benchmark harnesses used to run `deepseek-ai/DeepSeek-V4-Flash-0731` on SM80-class NVIDIA GPUs such as A100 / A800 / CMP 170HX.
 
 The target model is DeepSeek-V4-Flash-0731, roughly 284B total parameters with about 13B active MoE parameters. The tested hardware was 4 x NVIDIA CMP 170HX, GA100 silicon, 64 GB HBM each, PCIe Gen2 x4, no P2P/NVLink. The same direction is intended for SM80 A100-like cards where native FP8 math is unavailable but BF16 tensor cores and Marlin paths are available.
 
 ## What This Adds
 
+- Provides the actual modified vLLM framework source files under `framework/`, copied from the working server trees.
 - Enables DeepSeek-V4-Flash serving on SM80 using the `haosdent/vllm:dsv4-flash-a100` branch as the base.
 - Enables DSpark speculative decoding under pipeline parallelism, which vLLM originally rejected for this path.
 - Fixes long-context sparse MLA indexer memory pressure by row-chunking the `[M, N]` FP32 logits temporary.
 - Adds an SM80 prefill top-k torch fallback to avoid invalid top-k indices in long-context sparse indexer paths.
 - Fixes Marlin MoE routed-layout determinism at the wrapper level by canonicalizing `sorted_token_ids` before entering the Marlin MoE kernel.
 - Provides an optional FP8 block-weight to BF16 pre-dequant route for selected shared-expert dense linear layers on SM80.
-- Ships Docker, launch scripts and benchmark harnesses used for decode, prefill, concurrency, long-context and correctness tests.
+- Ships launch scripts and benchmark harnesses used for decode, prefill, concurrency, long-context and correctness tests.
 
 ## Measured Highlights
 
@@ -33,6 +34,10 @@ These are end-to-end measurements from the local test environment. See `results/
 ## Repository Layout
 
 ```text
+framework/
+  README.md
+  new-tmp-vllm/        actual modified source files from /home/lxk/new-tmp/tmp/vllm
+  tmp-vllm-pr52532/    later Marlin MoE PR #52532 source files from /home/lxk/tmp/vllm
 patches/
   0001-pp-dspark-long-context-sm80.patch
   0002-marlin-moe-token-order-canonicalization.patch
@@ -44,13 +49,45 @@ bench/
   benchmark harnesses and offline scripts
 results/
   measured result notes and setting rationale
-docker/
-  Dockerfile.devel and Dockerfile.fullbuild
 ```
+
+## Framework Source Files
+
+The source files are copied with their original vLLM-relative paths so they can be inspected directly on GitHub or overlaid onto a vLLM checkout.
+
+Main working tree:
+
+```text
+framework/new-tmp-vllm/
+```
+
+This was copied from:
+
+```text
+/home/lxk/new-tmp/tmp/vllm
+```
+
+It contains the PP + DSpark enablement, sparse indexer long-context fixes, SM80 prefill top-k fallback, and optional FP8 Marlin -> BF16/cuBLAS shared-expert dense-linear route.
+
+Later Marlin MoE consistency fix:
+
+```text
+framework/tmp-vllm-pr52532/
+```
+
+This was copied from:
+
+```text
+/home/lxk/tmp/vllm
+```
+
+It contains the later PR #52532 token-order canonicalization source and regression test.
+
+The whole `/home/lxk/new-tmp` directory is not uploaded raw because it also contains git metadata, local build outputs, virtual environments, logs, nsys/ncu profiles and other generated artifacts.
 
 ## Base vLLM
 
-The patches were generated against:
+The source files and patches were prepared against:
 
 ```bash
 git clone --branch dsv4-flash-a100 https://github.com/haosdent/vllm.git
@@ -64,48 +101,43 @@ Commit `12810046c` is titled:
 DSv4 SM80: DeepSeek-V4-Flash on A100 -- sparse MLA enablement, kernel tuning, and serving optimization
 ```
 
-## Apply Patches
+## Use The Source Files
 
-Core runtime patches:
+To overlay the framework files directly onto a vLLM checkout:
 
 ```bash
 cd /path/to/vllm
-git apply /path/to/deepseek-v4-flash-sm80/patches/0001-pp-dspark-long-context-sm80.patch
-git apply /path/to/deepseek-v4-flash-sm80/patches/0002-marlin-moe-token-order-canonicalization.patch
+rsync -a /path/to/deepseek-v4-flash-0731-sm80/framework/new-tmp-vllm/ ./
+```
+
+To also overlay the later Marlin MoE PR #52532 consistency fix:
+
+```bash
+rsync -a /path/to/deepseek-v4-flash-0731-sm80/framework/tmp-vllm-pr52532/ ./
+```
+
+Alternatively, apply the patch files:
+
+```bash
+cd /path/to/vllm
+git apply /path/to/deepseek-v4-flash-0731-sm80/patches/0001-pp-dspark-long-context-sm80.patch
+git apply /path/to/deepseek-v4-flash-0731-sm80/patches/0002-marlin-moe-token-order-canonicalization.patch
 ```
 
 Optional shared-expert FP8->BF16 dense-linear routing patch:
 
 ```bash
-git apply /path/to/deepseek-v4-flash-sm80/patches/optional/0003-fp8-marlin-bf16-dequant-include-nvtx.patch
+git apply /path/to/deepseek-v4-flash-0731-sm80/patches/optional/0003-fp8-marlin-bf16-dequant-include-nvtx.patch
 ```
 
 Use the optional patch only after profiling. It is beneficial for selected shared expert dense layers, but should not be enabled globally for all FP8 linears.
-
-## Build
-
-For the older Python/Triton-only patch set, the devel Dockerfile can use precompiled vLLM components. For bases touching `csrc/`, use the full build.
-
-```bash
-cd /path/to/vllm
-cp /path/to/deepseek-v4-flash-sm80/docker/Dockerfile.devel .
-cp /path/to/deepseek-v4-flash-sm80/docker/dockerignore.txt .dockerignore
-docker build -f Dockerfile.devel -t dsv4-sm80:devel .
-```
-
-Full build:
-
-```bash
-cp /path/to/deepseek-v4-flash-sm80/docker/Dockerfile.fullbuild .
-docker build -f Dockerfile.fullbuild -t dsv4-sm80:fullbuild .
-```
 
 ## Launch
 
 The main serving profile is pipeline-parallel DSpark:
 
 ```bash
-/path/to/deepseek-v4-flash-sm80/launch/run-pp-dspark.sh
+/path/to/deepseek-v4-flash-0731-sm80/launch/run-pp-dspark.sh
 ```
 
 Important defaults:
@@ -172,4 +204,4 @@ The long-context fix row-chunks the sparse indexer's `[M, N]` FP32 logits tempor
 
 ## License
 
-This repository contains patches and scripts around vLLM. vLLM is Apache-2.0 licensed; retain upstream notices when applying or redistributing patched source.
+This repository contains modified source files, patches and scripts around vLLM. vLLM is Apache-2.0 licensed; retain upstream notices when applying or redistributing patched source.
