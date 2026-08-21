@@ -23,7 +23,7 @@
 - **Sparse MLA / Indexer SM80 fallback**：为 SM80 增加 row-chunked top-k/indexer fallback，规避长上下文 prefill 中大 `[M, N]` logits 临时张量导致的显存墙和崩溃。
 - **Marlin MoE token order canonicalization**：在 `fused_marlin_moe()` wrapper 层 canonicalize `sorted_token_ids`，消除语义等价 routed layout 因物理顺序不同带来的 BF16 输出不一致。
 - **FP8 shared-expert dequant 控制**：增加 `VLLM_MARLIN_FP8_DEQUANT_*` 环境变量，让部分 FP8 Marlin linear 层可选择先 dequant 到 BF16 再走 GEMM，用于定位和优化 SM80 上 shared expert 的耗时。
-- **DeepSeek-V4-Flash 启动/测试脚本**：提供 PP4 启动脚本和离线 benchmark 脚本，避免只给补丁别人不知道怎么跑。
+- **DeepSeek-V4-Flash 启动/测试脚本**：提供 PP4 启动脚本和离线 benchmark 脚本。
 
 关键源码入口：
 
@@ -176,7 +176,7 @@ python -m pip install -e .
 
 ### 3. 启动 PP4 serving
 
-默认使用 GPU `0,2,3,4` 和模型路径 `/srv/models/deepseek-ai/DeepSeek-V4-Flash-0731`：
+默认使用 GPU `0,1,2,3` 和模型路径 `/models/DeepSeek-V4-Flash-0731`：
 
 ```bash
 bash launch/run-pp-dspark.sh
@@ -235,8 +235,6 @@ patches.cmp170hx/
 ```
 
 ## 重要测试经验
-
-这些坑都实际踩过：
 
 1. 不能按 SSE chunk 数算吞吐。spec decode 下一个 chunk 可能包含多个 token，要按 `completion_tokens` 或实际 token ids 计数。
 2. 对比配置必须生成相同 token 数，建议 benchmark 使用 `ignore_eos=True`。
