@@ -2,7 +2,7 @@
 
 这是一个面向 **DeepSeek-V4-Flash-0731** 的 vLLM 源码级 fork，目标是在 **SM80 / A100 / CMP 170HX** 这类没有原生 FP8 Tensor Core 的 GA100 系 GPU 上，把 DeepSeek-V4-Flash-0731 跑通并尽量跑快。
 
-这个仓库不是 Docker 包，也不是补丁包。它是完整源码树，clone 后可以按 vLLM 源码方式安装、启动和测试。
+完整源码树，clone 后可以按 vLLM 源码方式安装、启动和测试。
 
 ```text
 目标模型: deepseek-ai/DeepSeek-V4-Flash-0731
@@ -11,7 +11,7 @@
 部署形态: TP1 + PP4, kv_cache_dtype=fp8, tokenizer_mode=deepseek_v4
 ```
 
-模型权重不在仓库内，需要自行下载到本地模型目录。
+模型权重需要自行下载到本地模型目录。
 
 ## 做了什么
 
