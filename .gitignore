@@ -1,0 +1,34 @@
+# Python / build
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Large model/checkpoint/profile/log artifacts
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+*.onnx
+*.engine
+*.ncu-rep
+*.nsys-rep
+*.sqlite
+*.qdstrm
+*.log
+logs/
+checkpoints/
+models/
+model/
+
+# Local/editor/cache
+.cache/
+.triton/
+.cupy/
+.nv/
+.vscode/
+.DS_Store

@@ -1,0 +1,20 @@
+# Real CUDA toolkit base. python:3.12-slim + pip CUDA wheels gave nvcc 13.3
+# against flashinfer bundled cccl headers for 13.0; flashinfer JIT is a hard
+# requirement at engine init, so that mismatch is fatal. A -devel image ships a
+# self-consistent toolkit at /usr/local/cuda. Use a venv because Debian pip
+# cannot upgrade itself in place.
+FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends         python3.12 python3.12-dev python3.12-venv git build-essential curl ca-certificates     && rm -rf /var/lib/apt/lists/*
+RUN python3.12 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV CUDA_HOME=/usr/local/cuda
+
+WORKDIR /vllm
+COPY . /vllm/
+ENV VLLM_USE_PRECOMPILED=1
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
+RUN pip install --no-cache-dir -U pip setuptools wheel setuptools_scm
+RUN pip install --no-cache-dir -e .
+RUN nvcc --version | tail -2 && python3 -c "import vllm, torch; print(vllm.__version__, torch.__version__)"
