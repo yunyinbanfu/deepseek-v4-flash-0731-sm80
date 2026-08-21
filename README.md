@@ -7,7 +7,7 @@
 ```text
 目标模型: deepseek-ai/DeepSeek-V4-Flash-0731
 测试硬件: 4 x NVIDIA CMP 170HX, GA100 sm_80, 65,536 MiB VRAM, PCIe Gen2 x4, no P2P
-模型路径: /srv/models/deepseek-ai/DeepSeek-V4-Flash-0731
+模型路径: /models/DeepSeek-V4-Flash-0731
 部署形态: TP1 + PP4, kv_cache_dtype=fp8, tokenizer_mode=deepseek_v4
 ```
 
@@ -49,7 +49,7 @@ vllm/envs.py
 配置：
 
 ```text
-CUDA_VISIBLE_DEVICES=0,2,3,4
+CUDA_VISIBLE_DEVICES=0,1,2,3
 TP=1, PP=4
 max_model_len=2048
 max_num_seqs=16
@@ -186,7 +186,7 @@ bash launch/run-pp-dspark.sh
 
 ```bash
 DSV4_MODEL=/path/to/DeepSeek-V4-Flash-0731 \
-CUDA_VISIBLE_DEVICES=0,2,3,4 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
 DSV4_PORT=8000 \
 bash launch/run-pp-dspark.sh
 ```
@@ -209,7 +209,7 @@ DSV4_DISABLE_DSPARK=1 bash launch/run-pp-dspark.sh
 ### 4. 跑 1,024 x 128 五轮 benchmark
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,2,3,4 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
 PYTHONPATH=$PWD \
 VLLM_USE_V2_MODEL_RUNNER=1 \
 VLLM_SPARSE_DENSE_QUERY_BLOCK=4 \

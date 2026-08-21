@@ -6,7 +6,7 @@ import time
 from vllm import LLM, SamplingParams
 from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer
 
-MODEL = os.environ.get("DSV4_MODEL", "/srv/models/deepseek-ai/DeepSeek-V4-Flash-0731")
+MODEL = os.environ.get("DSV4_MODEL", "/models/DeepSeek-V4-Flash-0731")
 
 CONCURRENCY_TO_REQUESTS = {
     1: 16,

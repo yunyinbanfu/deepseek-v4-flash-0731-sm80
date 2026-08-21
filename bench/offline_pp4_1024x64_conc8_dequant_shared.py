@@ -7,7 +7,7 @@ os.environ["VLLM_MARLIN_FP8_DEQUANT_INCLUDE"] = "shared_experts.gate_up_proj,sha
 from vllm import LLM, SamplingParams
 from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer
 
-MODEL = os.environ.get("DSV4_MODEL", "/srv/models/deepseek-ai/DeepSeek-V4-Flash-0731")
+MODEL = os.environ.get("DSV4_MODEL", "/models/DeepSeek-V4-Flash-0731")
 CONC = 8
 INPUT_TOKENS = 1024
 OUTPUT_TOKENS = 64
