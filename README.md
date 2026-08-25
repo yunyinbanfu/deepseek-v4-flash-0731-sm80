@@ -6,7 +6,7 @@ This is a full source tree. After cloning the repository, you can install, launc
 
 ```text
 Target model: deepseek-ai/DeepSeek-V4-Flash-0731
-Test hardware: 4 x NVIDIA CMP 170HX, GA100 sm_80, 65,536 MiB VRAM, PCIe Gen2 x4, no P2P
+Test hardware: 4 x NVIDIA CMP 170HX (GA100 sm_80, 65,536 MiB VRAM, PCIe Gen2 x4, no P2P), 4 x NVIDIA A800, and 8 x NVIDIA A100
 Model path: /models/DeepSeek-V4-Flash-0731
 Serving setup: TP1 + PP4, kv_cache_dtype=fp8, tokenizer_mode=deepseek_v4
 ```
