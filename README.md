@@ -13,31 +13,6 @@ Serving setup: TP1 + PP4, kv_cache_dtype=fp8, tokenizer_mode=deepseek_v4
 
 Model weights are not included. You need to download the model weights separately and place them under your local model directory.
 
-## What This Fork Does
-
-This fork mainly addresses the usability and performance issues encountered when serving DeepSeek-V4-Flash-0731 on SM80/A100-class GPUs with vLLM, PP4 serving, DSpark speculative decoding, sparse MLA/indexer, and FP8/Marlin/MoE paths.
-
-Main changes:
-
-- **PP4 + DSpark speculative decoding**: removes/adapts DSpark limitations under pipeline parallelism so the drafter and target model can work together under PP4.
-- **Sparse MLA / Indexer SM80 fallback**: adds row-chunked top-k/indexer fallback paths for SM80, avoiding the memory wall and crashes caused by large `[M, N]` temporary logits tensors during long-context prefill.
-- **Marlin MoE token order canonicalization**: canonicalizes `sorted_token_ids` at the `fused_marlin_moe()` wrapper level, eliminating BF16 output differences caused by physically different token orders for semantically equivalent routed layouts.
-- **FP8 shared-expert dequant controls**: adds `VLLM_MARLIN_FP8_DEQUANT_*` environment variables so selected FP8 Marlin linear layers can be dequantized to BF16 before GEMM, which is useful for profiling and optimizing shared expert latency on SM80.
-- **DeepSeek-V4-Flash launch and benchmark scripts**: provides PP4 launch scripts and offline benchmark scripts.
-
-Key source entry points:
-
-```text
-vllm/v1/worker/gpu/model_runner.py
-vllm/v1/worker/gpu/pp_utils.py
-vllm/v1/worker/gpu/spec_decode/dspark/utils.py
-vllm/model_executor/layers/sparse_attn_indexer.py
-vllm/model_executor/layers/fused_moe/experts/marlin_moe.py
-vllm/model_executor/kernels/linear/scaled_mm/marlin.py
-vllm/model_executor/layers/quantization/fp8.py
-vllm/envs.py
-```
-
 ## Measured Benchmark Results
 
 Unless otherwise noted, the results below are measured with the corresponding source code and scripts in this repository. Timing is end-to-end wall clock time. Throughput is counted by completion tokens, not by SSE chunks.
